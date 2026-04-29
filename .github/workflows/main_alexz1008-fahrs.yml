@@ -2,7 +2,7 @@
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 # More info on Python, GitHub Actions, and Azure Functions: https://aka.ms/python-webapps-actions
 
-name: Build and deploy Python project to Azure Function App - alexz1008-fa-hrsdemo
+name: Build and deploy Python project to Azure Function App - alexz1008-fahrs
 
 on:
   push:
@@ -71,15 +71,15 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_71588D1A47CB46BF84B8B7D4604F9392 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_A7721AEBC2884D928A2BD6DD032F09AE }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_24BA104E05EC4705869B9B089663C2D5 }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_94BC2492542F4674A65A3F57BAE70BF8 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_E1B6D4056A764BDC8A3927AC14C03E5A }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_1EEDB19008524A5395C73E504B828470 }}
 
       - name: 'Deploy to Azure Functions'
         uses: Azure/functions-action@v1
         id: deploy-to-function
         with:
-          app-name: 'alexz1008-fa-hrsdemo'
+          app-name: 'alexz1008-fahrs'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
           

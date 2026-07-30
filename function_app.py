@@ -9,7 +9,7 @@ import traceback
 import validators
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from azure.search.documents import SearchClient
@@ -260,7 +260,8 @@ def fetch_sitemap(url):
                 loc = sitemap_el.find(f"{ns}loc")
                 if loc is not None and loc.text:
                     try:
-                        urls.extend(fetch_sitemap(loc.text.strip()))
+                        nested_sitemap_url = urljoin(sitemap_url, loc.text.strip())
+                        urls.extend(fetch_sitemap(nested_sitemap_url))
                     except Exception as e:
                         logging.warning(f"Failed to fetch sub-sitemap {loc.text}: {e}")
             return urls
@@ -277,7 +278,7 @@ def fetch_sitemap(url):
     for url_el in url_entries:
         loc = url_el.find(f"{ns}loc")
         if loc is not None and loc.text:
-            urls.append(loc.text.strip())
+            urls.append(urljoin(sitemap_url, loc.text.strip()))
     logging.info(f"Found {len(urls)} URLs in sitemap.")
     return urls
 

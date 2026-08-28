@@ -2,7 +2,7 @@
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 # More info on Python, GitHub Actions, and Azure Functions: https://aka.ms/python-webapps-actions
 
-name: Build and deploy Python project to Azure Function App - alexz1008-fahrs
+name: Build and deploy Python project to Azure Function App - EBCChatbotWebCrawler
 
 on:
   push:
@@ -40,7 +40,7 @@ jobs:
       # Optional: Add step to run tests here
 
       - name: Zip artifact for deployment
-        run: zip release.zip ./* -r -x 'venv/*'
+        run: zip release.zip ./* -r
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
@@ -71,15 +71,15 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_94BC2492542F4674A65A3F57BAE70BF8 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_E1B6D4056A764BDC8A3927AC14C03E5A }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_1EEDB19008524A5395C73E504B828470 }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_DAB351098B5942F2A6A9FDDFE59180DD }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_9455194465834DB685AB3754EACCF677 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_6C6F3D1B78E24440A6908A570AFE9354 }}
 
       - name: 'Deploy to Azure Functions'
         uses: Azure/functions-action@v1
         id: deploy-to-function
         with:
-          app-name: 'alexz1008-fahrs'
+          app-name: 'EBCChatbotWebCrawler'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
           remote-build: true

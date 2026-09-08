@@ -102,6 +102,20 @@ Azure Testing:
     2.  https://www.pluralsight.com/
     3.  https://www.linkedin.com/
 
+## Searching indexes
+
+The `search_indexes` function searches the indexes listed in `SEARCH_INDEX_NAMES`. Configure these application settings:
+
+- `SEARCH_ENDPOINT`: Azure AI Search service endpoint.
+- `SEARCH_API_KEY`: An admin key, required to inspect each index schema.
+- `SEARCH_INDEX_NAMES`: Comma-separated index names.
+- `SEARCH_SEMANTIC_CONFIG`: Semantic configuration name. Defaults to `default`.
+- `GRAPH_REQUEST_TIMEOUT`: Optional Microsoft Graph request timeout in seconds. Defaults to `10`.
+- `MANAGED_IDENTITY_CLIENT_ID`: Optional client ID for a user-assigned managed identity. When omitted, the default Azure credential chain is used.
+
+If an index has a retrievable `doc_url` field containing a Microsoft Graph `/drives/...` item URL, the function resolves its SharePoint `webUrl` and returns it as `source`. Resolution is cached for duplicate URLs during the request. Missing fields, token failures, and Graph failures are logged and fall back to the result's existing `url` field.
+
+The Function App identity needs Microsoft Graph application access to the indexed SharePoint content. Prefer `Sites.Selected` with access granted only to the required sites. The function accepts only HTTPS URLs hosted by `graph.microsoft.com` or Graph-relative `/drives/...` paths.
 
 ## Resources
 

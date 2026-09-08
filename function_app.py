@@ -9,10 +9,11 @@ import traceback
 import validators
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
 from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from azure.search.documents import SearchClient
+from azure.search.documents.indexes import SearchIndexClient
 from azure.core.credentials import AzureKeyCredential
 from azure.storage.blob import BlobServiceClient
 from bs4 import BeautifulSoup
@@ -22,11 +23,85 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 CHUNK_SIZE = 2000  # characters per chunk, tuned for AI Search
 DEFAULT_MAX_PAGES = int(os.environ.get("CRAWL_MAX_PAGES", "100"))
 CRAWL_NESTED_SITEMAPS = os.environ.get("CRAWL_NESTED_SITEMAPS", "false").lower() == "true"
+GRAPH_SCOPE = "https://graph.microsoft.com/.default"
+GRAPH_REQUEST_TIMEOUT = int(os.environ.get("GRAPH_REQUEST_TIMEOUT", "10"))
 REQUEST_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+
+def _get_azure_identity_credential():
+    client_id = os.environ.get("MANAGED_IDENTITY_CLIENT_ID")
+    if client_id:
+        return ManagedIdentityCredential(client_id=client_id)
+    return DefaultAzureCredential()
+
+
+def _build_graph_item_url(doc_url):
+    """Return a trusted, encoded Graph drive-item URL."""
+    if not isinstance(doc_url, str) or not doc_url.strip():
+        return None
+
+    doc_url = doc_url.strip()
+    if doc_url.startswith("/") and not doc_url.startswith("//"):
+        path = doc_url
+        query = ""
+    else:
+        parsed = urlparse(doc_url)
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        if (
+            parsed.scheme.lower() != "https"
+            or parsed.hostname != "graph.microsoft.com"
+            or parsed.username
+            or parsed.password
+            or port not in (None, 443)
+        ):
+            return None
+        path = parsed.path
+        query = parsed.query
+
+    if path.startswith("/drives/"):
+        path = f"/v1.0{path}"
+    elif not path.startswith("/v1.0/drives/"):
+        return None
+
+    encoded_path = quote(path, safe="/%:!$&'()*+,;=@-._~")
+    return urlunparse(("https", "graph.microsoft.com", encoded_path, "", query, ""))
+
+
+def _resolve_sharepoint_url(doc_url, access_token):
+    graph_url = _build_graph_item_url(doc_url)
+    if not graph_url:
+        logging.warning("Ignoring an invalid or untrusted doc_url: %r", doc_url)
+        return None
+
+    try:
+        response = requests.get(
+            graph_url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=GRAPH_REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        web_url = response.json().get("webUrl")
+        if not web_url:
+            logging.warning("Microsoft Graph returned no webUrl for doc_url: %s", doc_url)
+            return None
+        return web_url
+    except requests.exceptions.RequestException as error:
+        status_code = error.response.status_code if error.response is not None else None
+        logging.warning(
+            "Failed to resolve doc_url through Microsoft Graph (status=%s): %s",
+            status_code,
+            doc_url,
+        )
+    except (TypeError, ValueError):
+        logging.warning("Microsoft Graph returned invalid JSON for doc_url: %s", doc_url)
+    return None
 
 
 @app.route(route="search_site", methods=["POST"])
@@ -108,11 +183,32 @@ def search_indexes(req: func.HttpRequest) -> func.HttpResponse:
     index_names = [name.strip() for name in index_names_raw.split(",") if name.strip()]
 
     credential = AzureKeyCredential(search_api_key)
+    index_client = SearchIndexClient(endpoint=search_endpoint, credential=credential)
     all_results = []
     errors = []
+    resolved_url_cache = {}
+    graph_access_token = None
+    graph_token_attempted = False
 
     for index_name in index_names:
         try:
+            select_fields = ["content", "url", "title"]
+            has_doc_url = False
+            try:
+                index = index_client.get_index(index_name)
+                has_doc_url = any(
+                    field.name == "doc_url" and field.retrievable is not False
+                    for field in index.fields
+                )
+                if has_doc_url:
+                    select_fields.append("doc_url")
+            except Exception as error:
+                logging.warning(
+                    "Unable to inspect schema for index '%s'; doc_url resolution is disabled for this index: %s",
+                    index_name,
+                    error,
+                )
+
             search_client = SearchClient(
                 endpoint=search_endpoint,
                 index_name=index_name,
@@ -122,13 +218,32 @@ def search_indexes(req: func.HttpRequest) -> func.HttpResponse:
                 search_text=query,
                 query_type="semantic",
                 semantic_configuration_name=semantic_config,
-                select=["content", "url", "title"],
+                select=select_fields,
                 top=top,
             )
             for result in results:
+                source = result.get("url", "")
+                doc_url = result.get("doc_url") if has_doc_url else None
+                if doc_url:
+                    if doc_url not in resolved_url_cache:
+                        if not graph_token_attempted:
+                            graph_token_attempted = True
+                            try:
+                                identity_credential = _get_azure_identity_credential()
+                                graph_access_token = identity_credential.get_token(GRAPH_SCOPE).token
+                            except Exception as error:
+                                logging.warning("Unable to acquire a Microsoft Graph access token: %s", error)
+
+                        resolved_url_cache[doc_url] = (
+                            _resolve_sharepoint_url(doc_url, graph_access_token)
+                            if graph_access_token
+                            else None
+                        )
+                    source = resolved_url_cache[doc_url] or source
+
                 all_results.append({
                     "content": result.get("content", ""),
-                    "source": result.get("url", ""),
+                    "source": source,
                     "title": result.get("title", ""),
                     "index_name": index_name,
                     "score": result.get("@search.reranker_score", result.get("@search.score", 0)),
@@ -384,12 +499,7 @@ def upload_to_blob_storage(url, documents):
     try:
         account_url = os.environ["STORAGE_ACCOUNT_URL"]
         container_name = os.environ["STORAGE_CONTAINER_NAME"]
-        client_id = os.environ.get("MANAGED_IDENTITY_CLIENT_ID")
-
-        if client_id:
-            credential = ManagedIdentityCredential(client_id=client_id)
-        else:
-            credential = DefaultAzureCredential()
+        credential = _get_azure_identity_credential()
 
         blob_service_client = BlobServiceClient(account_url, credential=credential)
         container_client = blob_service_client.get_container_client(container_name)

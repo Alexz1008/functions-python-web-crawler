@@ -104,18 +104,21 @@ Azure Testing:
 
 ## Searching indexes
 
-The `search_indexes` function searches the indexes listed in `SEARCH_INDEX_NAMES`. Configure these application settings:
+The `search_indexes` function authenticates to Azure AI Search with Microsoft Entra ID and searches the indexes listed in `SEARCH_INDEX_NAMES`. Configure these Function App settings:
 
-- `SEARCH_ENDPOINT`: Azure AI Search service endpoint.
-- `SEARCH_API_KEY`: An admin key, required to inspect each index schema.
-- `SEARCH_INDEX_NAMES`: Comma-separated index names.
-- `SEARCH_SEMANTIC_CONFIG`: Semantic configuration name. Defaults to `default`.
+- `SEARCH_ENDPOINT`: The search service endpoint, such as `https://<service-name>.search.windows.net`.
+- `SEARCH_INDEX_NAMES`: A comma-separated list of indexes to query.
+- `SEARCH_SEMANTIC_CONFIG`: The semantic configuration name, or comma-separated per-index mappings. Defaults to `default`.
 - `GRAPH_REQUEST_TIMEOUT`: Optional Microsoft Graph request timeout in seconds. Defaults to `10`.
-- `MANAGED_IDENTITY_CLIENT_ID`: Optional client ID for a user-assigned managed identity. When omitted, the default Azure credential chain is used.
+- `MANAGED_IDENTITY_CLIENT_ID`: The client ID of the user-assigned managed identity. The same setting is used for AI Search, Microsoft Graph, and Blob Storage authentication.
 
 If an index has a retrievable `doc_url` field containing a Microsoft Graph `/drives/...` item URL, the function resolves its SharePoint `webUrl` and returns it as `source`. Resolution is cached for duplicate URLs during the request. Missing fields, token failures, and Graph failures are logged and fall back to the result's existing `url` field.
 
-The Function App identity needs Microsoft Graph application access to the indexed SharePoint content. Prefer `Sites.Selected` with access granted only to the required sites. The function accepts only HTTPS URLs hosted by `graph.microsoft.com` or Graph-relative `/drives/...` paths.
+Attach the user-assigned managed identity to the Function App, then grant it the **Search Index Data Reader** role on the Azure AI Search service. This is the least-privilege role required to query index documents, including semantic queries. The **Search Service Contributor** and **Search Index Data Contributor** roles are not required unless the application also manages indexes or writes documents.
+
+For local development, omit `MANAGED_IDENTITY_CLIENT_ID` to use `DefaultAzureCredential` with your Azure CLI or VS Code sign-in. Grant that developer identity the same **Search Index Data Reader** role. Azure AI Search must allow role-based access control; API-key-only authentication is not sufficient.
+
+The Function App identity also needs Microsoft Graph application access to the indexed SharePoint content. Prefer `Sites.Selected` with access granted only to the required sites. The function accepts only HTTPS URLs hosted by `graph.microsoft.com` or Graph-relative `/drives/...` paths.
 
 ## Resources
 

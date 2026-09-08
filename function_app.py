@@ -9,12 +9,10 @@ import traceback
 import validators
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from azure.search.documents import SearchClient
-from azure.search.documents.indexes import SearchIndexClient
-from azure.core.credentials import AzureKeyCredential
 from azure.storage.blob import BlobServiceClient
 from bs4 import BeautifulSoup
 
@@ -104,6 +102,23 @@ def _resolve_sharepoint_url(doc_url, access_token):
     return None
 
 
+def parse_semantic_config(raw):
+    """Parse a shared or per-index semantic configuration setting."""
+    mapping = {}
+    if not raw:
+        return mapping
+    if "=" not in raw:
+        mapping["*"] = raw.strip()
+        return mapping
+    for pair in raw.split(","):
+        index_name, _, config_name = pair.partition("=")
+        index_name = index_name.strip()
+        config_name = config_name.strip()
+        if index_name and config_name:
+            mapping[index_name] = config_name
+    return mapping
+
+
 @app.route(route="search_site", methods=["POST"])
 def search_site(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
@@ -150,13 +165,13 @@ def search_indexes(req: func.HttpRequest) -> func.HttpResponse:
 
     # Validate environment configuration
     search_endpoint = os.environ.get("SEARCH_ENDPOINT")
-    search_api_key = os.environ.get("SEARCH_API_KEY")
     index_names_raw = os.environ.get("SEARCH_INDEX_NAMES")
-    semantic_config = os.environ.get("SEARCH_SEMANTIC_CONFIG", "default")
+    semantic_config_raw = os.environ.get("SEARCH_SEMANTIC_CONFIG", "default")
+    semantic_config_map = parse_semantic_config(semantic_config_raw)
 
-    if not search_endpoint or not search_api_key or not index_names_raw:
+    if not search_endpoint or not index_names_raw:
         return func.HttpResponse(
-            json.dumps({"error": "Missing required environment variables: SEARCH_ENDPOINT, SEARCH_API_KEY, SEARCH_INDEX_NAMES"}),
+            json.dumps({"error": "Missing required environment variables: SEARCH_ENDPOINT, SEARCH_INDEX_NAMES"}),
             status_code=400,
             mimetype="application/json"
         )
@@ -182,8 +197,7 @@ def search_indexes(req: func.HttpRequest) -> func.HttpResponse:
     top = req_body.get("top", 5)
     index_names = [name.strip() for name in index_names_raw.split(",") if name.strip()]
 
-    credential = AzureKeyCredential(search_api_key)
-    index_client = SearchIndexClient(endpoint=search_endpoint, credential=credential)
+    credential = _get_azure_identity_credential()
     all_results = []
     errors = []
     resolved_url_cache = {}
@@ -192,45 +206,27 @@ def search_indexes(req: func.HttpRequest) -> func.HttpResponse:
 
     for index_name in index_names:
         try:
-            select_fields = ["content", "url", "title"]
-            has_doc_url = False
-            try:
-                index = index_client.get_index(index_name)
-                has_doc_url = any(
-                    field.name == "doc_url" and field.retrievable is not False
-                    for field in index.fields
-                )
-                if has_doc_url:
-                    select_fields.append("doc_url")
-            except Exception as error:
-                logging.warning(
-                    "Unable to inspect schema for index '%s'; doc_url resolution is disabled for this index: %s",
-                    index_name,
-                    error,
-                )
-
             search_client = SearchClient(
                 endpoint=search_endpoint,
                 index_name=index_name,
                 credential=credential,
             )
+            semantic_config = semantic_config_map.get(index_name, semantic_config_map.get("*", "default"))
             results = search_client.search(
                 search_text=query,
                 query_type="semantic",
                 semantic_configuration_name=semantic_config,
-                select=select_fields,
                 top=top,
             )
             for result in results:
                 source = result.get("url", "")
-                doc_url = result.get("doc_url") if has_doc_url else None
+                doc_url = result.get("doc_url")
                 if doc_url:
                     if doc_url not in resolved_url_cache:
                         if not graph_token_attempted:
                             graph_token_attempted = True
                             try:
-                                identity_credential = _get_azure_identity_credential()
-                                graph_access_token = identity_credential.get_token(GRAPH_SCOPE).token
+                                graph_access_token = credential.get_token(GRAPH_SCOPE).token
                             except Exception as error:
                                 logging.warning("Unable to acquire a Microsoft Graph access token: %s", error)
 
@@ -242,7 +238,7 @@ def search_indexes(req: func.HttpRequest) -> func.HttpResponse:
                     source = resolved_url_cache[doc_url] or source
 
                 all_results.append({
-                    "content": result.get("content", ""),
+                    "content": result.get("content") or result.get("chunk", ""),
                     "source": source,
                     "title": result.get("title", ""),
                     "index_name": index_name,
@@ -348,7 +344,8 @@ def fetch_sitemap(url):
                 loc = sitemap_el.find(f"{ns}loc")
                 if loc is not None and loc.text:
                     try:
-                        urls.extend(fetch_sitemap(loc.text.strip()))
+                        nested_sitemap_url = urljoin(sitemap_url, loc.text.strip())
+                        urls.extend(fetch_sitemap(nested_sitemap_url))
                     except Exception as e:
                         logging.warning(f"Failed to fetch sub-sitemap {loc.text}: {e}")
             return urls
@@ -365,7 +362,7 @@ def fetch_sitemap(url):
     for url_el in url_entries:
         loc = url_el.find(f"{ns}loc")
         if loc is not None and loc.text:
-            urls.append(loc.text.strip())
+            urls.append(urljoin(sitemap_url, loc.text.strip()))
     logging.info(f"Found {len(urls)} URLs in sitemap.")
     return urls
 
